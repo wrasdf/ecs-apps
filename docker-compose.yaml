@@ -1,0 +1,21 @@
+---
+version: "2.1"
+services:
+
+  aws:
+    image: cgswong/aws:aws
+    working_dir: /app
+    environment:
+      - AWS_DEFAULT_REGION=ap-southeast-1
+    volumes:
+      - .:/app
+      - $HOME/.aws:/root/.aws
+
+  stackup:
+    image: realestate/stackup:1.2.0
+    working_dir: /app
+    volumes:
+      - $HOME/.aws:/root/.aws
+      - .:/app
+    environment:
+      - AWS_DEFAULT_REGION=ap-southeast-1

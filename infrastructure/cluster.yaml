@@ -1,0 +1,396 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  Version:
+    Description: "ECS Cluster Version"
+    Type: String
+    Default: "0.1.0"
+  KeyName:
+    Description: Application SSH Login Keypair name
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-Cluster
+
+  ElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets: !Split [ ',', !ImportValue ECS-PUBLIC-SUBNETS ]
+      SecurityGroups:
+      - !Ref ALBSecurityGroup
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-ALB
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http and https to client cluster
+      VpcId: !ImportValue ECS-VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-ALB-SG
+
+  ECSClusterAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Split [ ',', !ImportValue ECS-PRIVATE-SUBNETS ]
+      LaunchConfigurationName: !Ref ECSClusterLaunchConfiguration
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 1
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-ECS-ClUSTER-ASG
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT10M
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+        WaitOnResourceSignals: true
+
+  ECSClusterScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ECSClusterAutoScalingGroup
+      Cooldown: 300
+      ScalingAdjustment: 1
+
+  ECSClusterScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ECSClusterAutoScalingGroup
+      Cooldown: 300
+      ScalingAdjustment: -1
+
+  MemoryReservationHighAlert:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-MemoryReservationHighAlert
+      EvaluationPeriods: '1'
+      Statistic: Maximum
+      Threshold: '80'
+      Period: '60'
+      AlarmActions:
+        - !Ref ECSClusterScaleUpPolicy
+      OKActions:
+        - !Ref ECSClusterScaleDownPolicy
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: MemoryReservation
+      Namespace: AWS/ECS
+
+  CPUReservationHighAlert:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-CPUReservationHighAlert
+      EvaluationPeriods: '1'
+      Statistic: Maximum
+      Threshold: '80'
+      Period: '60'
+      AlarmActions:
+        - !Ref ECSClusterScaleUpPolicy
+      OKActions:
+        - !Ref ECSClusterScaleDownPolicy
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUReservation
+      Namespace: AWS/ECS
+
+  ECSClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn:
+      - ALBSecurityGroup
+    Properties:
+      GroupDescription: ECS Cluster Security Group
+      VpcId: !ImportValue ECS-VPC
+      SecurityGroupEgress:
+      - IpProtocol: "-1"
+        CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 32768
+        ToPort: 61000
+      - SourceSecurityGroupId: !Ref ALBSecurityGroup
+        IpProtocol: -1
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-ECS-CLUSTER-SG
+
+  ECSClusterLaunchConfiguration:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Properties:
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref ECSClusterProfile
+      ImageId: ami-36867d54
+      InstanceType: t2.medium
+      SecurityGroups:
+      - !Ref ECSClusterSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum install -y aws-cfn-bootstrap aws-cli awslogs jq
+
+          # set up the ECS config
+          cat >> /etc/ecs/ecs.config <<EoConf
+          ECS_CLUSTER=${ECSCluster}
+          EoConf
+
+          stop ecs
+          start ecs
+
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSClusterLaunchConfiguration
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSClusterAutoScalingGroup
+
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              awslogs: []
+        files:
+
+          "/etc/cfn/cfn-hup.conf":
+            mode: 000400
+            owner: root
+            group: root
+            content: !Sub |
+              [main]
+              stack=${AWS::StackId}
+              region=${AWS::Region}
+
+          "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+            mode: 000400
+            owner: root
+            group: root
+            content: !Sub |
+              [cfn-auto-reloader-hook]
+              triggers=post.update
+              path=Resources.ECSLaunchConfiguration.Metadata.AWS::CloudFormation::Init
+              action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSClusterLaunchConfiguration
+
+          "/etc/awslogs/awscli.conf":
+            content: !Sub |
+              [plugins]
+              cwlogs = cwlogs
+              [default]
+              region = ${AWS::Region}
+
+          "/etc/awslogs/awslogs.conf":
+            content: !Sub |
+              [general]
+              state_file = /var/lib/awslogs/agent-state
+
+              [/var/log/dmesg]
+              file = /var/log/dmesg
+              log_group_name = ${ECSCluster}-/var/log/dmesg
+              log_stream_name = ${ECSCluster}
+
+              [/var/log/messages]
+              file = /var/log/messages
+              log_group_name = ${ECSCluster}-/var/log/messages
+              log_stream_name = ${ECSCluster}
+              datetime_format = %b %d %H:%M:%S
+
+              [/var/log/docker]
+              file = /var/log/docker
+              log_group_name = ${ECSCluster}-/var/log/docker
+              log_stream_name = ${ECSCluster}
+              datetime_format = %Y-%m-%dT%H:%M:%S.%f
+
+              [/var/log/ecs/ecs-init.log]
+              file = /var/log/ecs/ecs-init.log.*
+              log_group_name = ${ECSCluster}-/var/log/ecs/ecs-init.log
+              log_stream_name = ${ECSCluster}
+              datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+              [/var/log/ecs/ecs-agent.log]
+              file = /var/log/ecs/ecs-agent.log.*
+              log_group_name = ${ECSCluster}-/var/log/ecs/ecs-agent.log
+              log_stream_name = ${ECSCluster}
+              datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+              [/var/log/ecs/audit.log]
+              file = /var/log/ecs/audit.log.*
+              log_group_name = ${ECSCluster}-/var/log/ecs/audit.log
+              log_stream_name = ${ECSCluster}
+              datetime_format = %Y-%m-%dT%H:%M:%SZ
+
+        services:
+          sysvinit:
+            cfn-hup:
+              enabled: true
+              ensureRunning: true
+              files:
+                - /etc/cfn/cfn-hup.conf
+                - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+            awslogs:
+              enabled: true
+              ensureRunning: true
+              files:
+                - /etc/awslogs/awslogs.conf
+                - /etc/awslogs/awscli.conf
+
+  ECSClusterProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - !Ref ECSClusterRole
+
+  ECSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-ECSRole
+      Path: /app/
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+        - PolicyName: allow-logs
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - logs:*
+              Resource: '*'
+        - PolicyName: allow-read-only-access-to-ecr
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:GetRepositoryPolicy
+              - ecr:DescribeRepositories
+              - ecr:ListImages
+              - ecr:BatchGetImage
+              Resource: "*"
+        - PolicyName: allow-ecs-permissions
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - ecs:*
+              Resource: "*"
+        - PolicyName: allow-s3
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - s3:*
+              Resource: "*"
+        - PolicyName: allow-kms
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - kms:*
+              Resource: "*"
+        - PolicyName: allow-dynamodb
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - dynamodb:*
+              Resource: "*"
+        - PolicyName: allow-rds
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - rds:*
+              Resource: "*"
+        - PolicyName: allow-cloudwatch
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - ec2messages:*
+              Resource: "*"
+        - PolicyName: allow-EC2Messages
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - cloudwatch:*
+              Resource: "*"
+        - PolicyName: allow-SSM
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - ssm:*
+              Resource: "*"
+        - PolicyName: allow-SQS
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - sqs:*
+              Resource: "*"
+        - PolicyName: allow-SNS
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - sns:*
+              Resource: "*"
+
+Outputs:
+  ECSCluster:
+    Description: A reference to the cluster
+    Value: !Ref ECSCluster
+    Export:
+      Name: ECS-CLUSTER
+  ElasticLoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref ElasticLoadBalancer
+    Export:
+      Name: ECS-CLUSTER-ALB
+  ElasticLoadBalancerUrl:
+    Description: The URL of the ALB
+    Value: !GetAtt ElasticLoadBalancer.DNSName

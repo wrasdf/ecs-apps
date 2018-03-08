@@ -1,0 +1,5 @@
+CidrBlock: 10.192.0.0/16
+SubnetCIDRPublic1: 10.192.10.0/24
+SubnetCIDRPrivate1: 10.192.20.0/24
+SubnetCIDRPublic2: 10.192.11.0/24
+SubnetCIDRPrivate2: 10.192.21.0/24
