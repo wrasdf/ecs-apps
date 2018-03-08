@@ -1,4 +1,4 @@
-.PHONY:
+.PHONY: cfn-verify-vpc cfn-verify-cluster
 
 DCR := docker-compose run --rm
 %-dev: environment := dev

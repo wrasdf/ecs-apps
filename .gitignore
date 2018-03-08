@@ -1,2 +1,2 @@
-./app-rds/node_modules
-./app-dynamodb/node_modules
+app-rds/node_modules/*
+app-dynamodb/node_modules/*

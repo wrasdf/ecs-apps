@@ -4,7 +4,7 @@
   "description": "Node server with RDS and Dynamodb",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
   "keywords": [
     "Node",
@@ -13,5 +13,8 @@
     "Cloudformation"
   ],
   "author": "wrasdf@gmail.com",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.16.2"
+  }
 }

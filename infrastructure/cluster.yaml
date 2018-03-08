@@ -158,7 +158,7 @@ Resources:
     Properties:
       KeyName: !Ref KeyName
       IamInstanceProfile: !Ref ECSClusterProfile
-      ImageId: ami-36867d54
+      ImageId: ami-0a622c76
       InstanceType: t2.medium
       SecurityGroups:
       - !Ref ECSClusterSecurityGroup
