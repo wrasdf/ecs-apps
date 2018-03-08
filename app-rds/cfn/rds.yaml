@@ -1,0 +1,142 @@
+# Note, the development RDS is not Multi-AZ supported
+# Only the production RDS is Multi-AZ supported
+#
+---
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  Version:
+    Description: "RDS Postgres Stack Version"
+    Type: String
+    Default: "0.1.0"
+
+  ServerEnv:
+    Description: "Server Environment name."
+    ConstraintDescription: "Choose an Environment from the drop down"
+    Type: "String"
+    AllowedValues:
+      - "dev"
+      - "staging"
+      - "prod"
+
+  DBUser:
+    NoEcho: 'true'
+    Type: "String"
+    Description: "Database admin account name"
+    MinLength: '5'
+    MaxLength: '16'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: "Name must begin with a letter and contain only alphanumeric characters."
+
+  DBPassword:
+    NoEcho: 'true'
+    Type: "String"
+    Description: "Database admin account password"
+    MinLength: '6'
+    MaxLength: '41'
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: "Password must contain only alphanumeric characters."
+
+  DBName:
+    Type: "String"
+    Description: "Database name"
+    MinLength: '1'
+    MaxLength: '30'
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ConstraintDescription: "Name must begin with a letter and contain only alphanumeric characters."
+
+  DBAllocatedStorage:
+    Type: "String"
+    Description: "Database storage size in gigabytes (GB)"
+    MinLength: '1'
+    Default: '5'
+    AllowedPattern: "[5-9][0-9]*"
+    ConstraintDescription: "Enter a size of at least 5 GB"
+
+  DBEngine:
+    Type: "String"
+    Description: "Database engine, MySQL or PostgreSQL"
+    ConstraintDescription: "Choose an engine from the drop down"
+    AllowedValues:
+      - "mysql"
+      - "postgres"
+
+  DBInstanceClass:
+    Type: "String"
+    Description: "Database instance class, e.g. db.t2.micro (free tier)"
+    ConstraintDescription: "Choose an instance class from the drop down"
+    AllowedValues:
+      - "db.t2.micro"
+      - "db.t2.small"
+      - "db.t2.medium"
+      - "db.t2.large"
+      - "db.m4.large"
+      - "db.m4.xlarge"
+      - "db.m4.2xlarge"
+      - "db.m4.4xlarge"
+      - "db.m4.10xlarge"
+      - "db.r3.large"
+      - "db.r3.xlarge"
+      - "db.r3.2xlarge"
+      - "db.r3.4xlarge"
+      - "db.r3.8xlarge"
+
+Conditions:
+  IsProdEnv: !Equals [ !Ref "ServerEnv", "prod" ]
+
+Resources:
+
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 and SSH access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+
+  DBSecurityGroup:
+    Type: AWS::RDS::DBSecurityGroup
+    DependsOn: ServerSecurityGroup
+    Properties:
+      EC2VpcId: !ImportValue ECS-VPC
+      DBSecurityGroupIngress:
+        -
+          EC2SecurityGroupName: !Ref ServerSecurityGroup
+      GroupDescription: "App Access"
+
+  RDSDBInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn: DBSecurityGroup
+    Properties:
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      Engine: !Ref DBEngine
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: standard
+      MultiAZ: !If [ "IsProdEnv", 'true', 'false' ]
+    DeletionPolicy: Snapshot
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "${ServerEnv} RDS DB Private Subnet"
+      SubnetIds: !Split [ ',', !ImportValue ECS-PRIVATE-SUBNETS ]
+      Tags:
+        -
+          Key: Name
+          Value: !Sub ${AWS::StackName}-DB-Subnet-Group
+
+Outputs:
+  RDSEndPoint:
+    Description: "RDS Database Endpoint"
+    Value: !GetAtt RDSDBInstance.Endpoint.Address

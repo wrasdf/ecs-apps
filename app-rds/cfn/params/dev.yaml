@@ -1,0 +1,7 @@
+---
+ServerEnv: dev
+DBUser: DBAdminUser
+DBPassword: DBAdminPassword
+DBName: AppRDS
+DBEngine: postgres
+DBInstanceClass: db.t2.small
